@@ -1,16 +1,34 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_
-from sqlalchemy.orm import selectinload
+from sqlalchemy import select, or_
 from typing import List, Optional
-from .schemas import Item, Status, Priority, ItemCreate
+from .schemas import Item, Status, Priority, ItemCreate, UserCreate, User
 from .models import Item as ItemModel, User as UserModel
 from .database import get_db
-from fastapi.security import OAuth2PasswordBearer
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+from .auth import (
+    get_current_admin,
+    verify_password,
+    create_access_token,
+    get_password_hash,
+)
 
 routerApplication = APIRouter(prefix="/application", tags=["application"])
+routerAuth = APIRouter(prefix="/auth", tags=["auth"])
+
+@routerAuth.post("/login")
+async def login(user: UserCreate, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(UserModel).where(UserModel.username == user.username))
+    db_user = result.scalar_one_or_none()
+
+    if not db_user or not verify_password(user.password, db_user.hashed_password):
+        raise HTTPException(
+            status_code=401,
+            detail="Неверный логин или пароль",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token = create_access_token(data={"sub": db_user.username})
+    return {"access_token": access_token, "token_type": "bearer"}
 
 @routerApplication.post("/items", response_model=Item, status_code=201)
 async def create_item(item: ItemCreate, db: AsyncSession = Depends(get_db)):
@@ -22,146 +40,87 @@ async def create_item(item: ItemCreate, db: AsyncSession = Depends(get_db)):
 
 @routerApplication.get("/items", response_model=List[Item])
 async def get_items(
-    skip: int = Query(0, ge=0, description="Пропустить N записей"),
-    limit: int = Query(10, ge=1, le=100, description="Максимум записей"),
-    status: Optional[Status] = Query(None, description="Фильтр по статусу"),
-    priority: Optional[Priority] = Query(None, description="Фильтр по приоритету"),
-    search: Optional[str] = Query(None, description="Поиск по title и description"),
-    sort_by: str = Query("created_at", description="Сортировка: created_at или priority"),
-    sort_order: str = Query("desc", description="Порядок: asc или desc"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(10, ge=1, le=100),
+    status: Optional[Status] = Query(None),
+    priority: Optional[Priority] = Query(None),
+    search: Optional[str] = Query(None),
+    sort_by: str = Query("created_at"),
+    sort_order: str = Query("desc"),
     db: AsyncSession = Depends(get_db)
 ):
-
     query = select(ItemModel)
-    
+
     if status:
         query = query.where(ItemModel.status == status.value)
-    
     if priority:
         query = query.where(ItemModel.priority == priority.value)
-    
     if search:
-        search_pattern = f"%{search}%"
-        query = query.where(
-            or_(
-                ItemModel.title.ilike(search_pattern),
-                ItemModel.description.ilike(search_pattern)
-            )
-        )
-    
-    if sort_by == "created_at":
-        sort_column = ItemModel.created_at
-    elif sort_by == "priority":
-        sort_column = ItemModel.priority
-    else:
-        sort_column = ItemModel.created_at
-    
-    if sort_order.lower() == "asc":
-        query = query.order_by(sort_column.asc())
-    else:
-        query = query.order_by(sort_column.desc())
-    
+        sp = f"%{search}%"
+        query = query.where(or_(ItemModel.title.ilike(sp), ItemModel.description.ilike(sp)))
+
+    sort_col = ItemModel.created_at if sort_by == "created_at" else ItemModel.priority
+    query = query.order_by(sort_col.desc() if sort_order.lower() == "desc" else sort_col.asc())
     query = query.offset(skip).limit(limit)
+
     result = await db.execute(query)
-    items = result.scalars().all()
-    
-    return items
+    return result.scalars().all()
 
 @routerApplication.get("/items/{item_id}", response_model=Item)
 async def get_item(item_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(ItemModel).where(ItemModel.id == item_id))
     item = result.scalar_one_or_none()
-    
     if not item:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
-    
     return item
 
 @routerApplication.patch("/items/{item_id}", response_model=Item)
-async def update_item(
-    item_id: int,
-    item_update: ItemCreate,
-    db: AsyncSession = Depends(get_db)
-):
+async def update_item(item_id: int, item_update: ItemCreate, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(ItemModel).where(ItemModel.id == item_id))
     item = result.scalar_one_or_none()
-    
     if not item:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
-    
     if item.status == "done":
-        raise HTTPException(
-            status_code=400, 
-            detail="Нельзя редактировать заявку со статусом 'done'"
-        )
-    
-    update_data = item_update.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(item, field, value)
-    
-    await db.commit()
-    await db.refresh(item)
-    
-    return item
+        raise HTTPException(status_code=400, detail="Нельзя редактировать done-заявку")
 
-@routerApplication.patch("/items/{item_id}/status", response_model=Item)
-async def update_item_status(
-    item_id: int,
-    status: Status,
-    db: AsyncSession = Depends(get_db)
-):
-    result = await db.execute(select(ItemModel).where(ItemModel.id == item_id))
-    item = result.scalar_one_or_none()
-    
-    if not item:
-        raise HTTPException(status_code=404, detail="Заявка не найдена")
-    
-    if item.status == "done":
-        raise HTTPException(
-            status_code=400, 
-            detail="Нельзя изменить статус заявки со статусом 'done'"
-        )
-    
-    item.status = status.value
+    for k, v in item_update.model_dump(exclude_unset=True).items():
+        setattr(item, k, v)
     await db.commit()
     await db.refresh(item)
-    
     return item
 
 @routerApplication.delete("/items/{item_id}")
 async def delete_item(
     item_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_admin)
+    current_user: UserModel = Depends(get_current_admin)  # ✅ Используем функцию из auth.py
 ):
     result = await db.execute(select(ItemModel).where(ItemModel.id == item_id))
     item = result.scalar_one_or_none()
-    
     if not item:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
-    
     if item.status == "done":
-        raise HTTPException(
-            status_code=400, 
-            detail="Нельзя удалить заявку со статусом 'done'"
-        )
-    
+        raise HTTPException(status_code=400, detail="Нельзя удалить done-заявку")
+
     await db.delete(item)
     await db.commit()
-    
-    return {"message": "Заявка успешно удалена"}
+    return {"message": "Заявка удалена"}
 
-async def get_current_admin(
-    db: AsyncSession = Depends(get_db),
-    token: str = Depends(oauth2_scheme)
-):
-    from .auth import get_current_user
-    current_user = await get_current_user(token=token, db=db)
+
+@routerAuth.post("/register")
+async def register(user: UserCreate, db: AsyncSession = Depends(get_db)):
+    # Проверяем, нет ли уже такого юзера
+    result = await db.execute(select(UserModel).where(UserModel.username == user.username))
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Пользователь уже существует")
     
-    if not current_user.is_admin:
-        raise HTTPException(
-            status_code=403,
-            detail="Только администраторы могут выполнять это действие"
-        )
-    
-    return current_user
+    # Хешируем пароль и создаем
+    hashed_pwd = get_password_hash(user.password)
+    new_user = UserModel(
+        username=user.username,
+        hashed_password=hashed_pwd,
+        is_admin=False  # Обычный пользователь
+    )
+    db.add(new_user)
+    await db.commit()
+    return {"message": "Пользователь создан"}

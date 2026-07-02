@@ -1,8 +1,8 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from .models import Base
 
-# SQLite асинхронный движок
 DATABASE_URL = "sqlite+aiosqlite:///./test_task.db"
 
 engine = create_async_engine(
@@ -17,7 +17,7 @@ AsyncSessionLocal = sessionmaker(
     expire_on_commit=False,
 )
 
-# Функция для получения сессии (используется в Depends)
+
 async def get_db():
     async with AsyncSessionLocal() as session:
         try:
