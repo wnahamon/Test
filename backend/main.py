@@ -3,9 +3,18 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from src.database import engine, Base
 from src.routers import routerApplication, routerAuth
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Test Task API")
-3232
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],  # Адрес твоего Vite dev server
+    allow_credentials=True,                   # Разрешить cookies/токены
+    allow_methods=["*"],                      # Разрешить ВСЕ методы (GET, POST, PUT, DELETE, OPTIONS)
+    allow_headers=["*"],                      # Разрешить все заголовки (включая Authorization)
+)
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     errors = []

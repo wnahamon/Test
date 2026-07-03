@@ -175,6 +175,7 @@ export default function App() {
     }
   };
 
+  // === РЕНДЕР АВТОРИЗАЦИИ ===
   if (!token) {
     return (
       <div style={styles.container}>
@@ -384,6 +385,7 @@ export default function App() {
   );
 }
 
+
 const styles: Record<string, React.CSSProperties> = {
   container: {
     maxWidth: 800,
@@ -448,6 +450,7 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid #cbd5e1",
     fontSize: 14,
     background: "#fff",
+    color:"black"
   },
   btnPrimary: {
     padding: "8px 16px",
